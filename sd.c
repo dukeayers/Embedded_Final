@@ -1,5 +1,4 @@
-#include "system.h"
-
+#include "sd.h"
 //Module added for project 3
 //Defines used in sd spi communcation taken from
 //Taken from 
@@ -214,7 +213,7 @@ void sd_reinit(){
 void sd_read(){
 	
 	// creates variable declarations and counters
-	unsigned long address = 0x00;
+	unsigned long address = 512;
 	unsigned short i;
 
 	// Sends the command for read then prints it out formatted as the 
@@ -236,7 +235,7 @@ void sd_read(){
 	
 	uwrite_hex(address>>8);
 	printf(" ");
-	spi_rxtx(address);
+	spi_rxtx(address >> 8);
 	
 	uwrite_hex(address);
 	printf(" ");
@@ -290,7 +289,8 @@ void sd_write(unsigned char value){
 	
 	
 	// send the data to be written to sd 
-	for(int i=0;i<BLOCK;i++){
+        int i;
+	for(i=0;i<BLOCK;i++){
 		response = spi_rxtx(value);
 	}
 	// Disable chip select	
