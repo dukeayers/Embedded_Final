@@ -1,301 +1,208 @@
 #include "sd.h"
-//Module added for project 3
-//Defines used in sd spi communcation taken from
-//Taken from 
-//http://codeandlife.com/2012/04/25/simple-fat-and-sd-tutorial-part-3/
-#define SPI_DDR DDRB
-#define SPI_PORT PORTB
-#define MOSI (1<<PB5)
-#define MISO (1<<PB6)
-#define SCK (1<<PB7)
-
-#define CS_DDR DDRB
-#define CS (1<<PB4)
-#define CS_ENABLE() (PORTB &= ~CS)
-#define CS_DISABLE() (PORTB |= CS)
-
-//Defines to prevent hard coding 
-#define RESPONSE 8
-#define STUFFING 0x00
-#define BLOCK 512
-#define FF 0xFF
-
-// Taken from 
-// http://www.openbeacon.org/git-view/openbeacon/plain/firmware/at91sam7/openbeacon-openpicc2/application/dosfs/sdcard.c?id=v0.0.6
-// Deleted some things not used
-/* Definitions for MMC/SDC command */
-#define CMD0	(0x40+0)	/* GO_IDLE_STATE */
-#define CMD1	(0x40+1)	/* SEND_OP_COND (MMC) */
-#define CMD41	(0x40+41)
-#define CMD8	(0x40+8)	/* SEND_IF_COND */
-#define CMD12	(0x40+12)	/* STOP_TRANSMISSION */
-#define CMD16	(0x40+16)	/* SET_BLOCKLEN */
-#define CMD17	(0x40+17)	/* READ_SINGLE_BLOCK */
-#define CMD24	(0x40+24)	/* WRITE_BLOCK */
-#define CMD55	(0x40+55)	/* APP_CMD */
-#define CMD58	(0x40+58)	/* READ_OCR */
-
-//Taken from http://codeandlife.com/2012/04/25/simple-fat-and-sd-tutorial-part-3/
-// Similar to provided spi initalization
-void SPI_init() {
-	CS_DDR |= CS; // SD card circuit select as output
-	SPI_DDR |= MOSI + SCK; // MOSI and SCK as outputs
-	SPI_PORT |= MISO; // pullup in MISO, might not be needed
-	
-	// Enable SPI, master, set clock rate fck/128
-	SPCR = (1<<SPE) | (1<<MSTR) | (1<<SPR0) | (1<<SPR1);
+void sd_clock_sync()
+{
+    PORTB |= _BV(SS); // MOSI and SS logic 1
+    int i;
+    for(i = 0; i < 15; i++)
+    {
+        spi_send(DUMMY);
+    }
+    PORTB ^= _BV(SS);
 }
 
-unsigned char spi_rxtx(unsigned char ch) {
-	SPDR = ch;
-	while(!(SPSR & (1<<SPIF))) {}
-	return SPDR;
+Byte sd_init()
+{
+    // SYNC Clocks
+    sd_clock_sync();
+    Byte buffer[5];
+    buffer[0] = 0;
+
+    // SEND CMD 0
+    puts("Sending CMD0");
+    Byte i = 0;
+    // attempt CMD0 up to 5 times
+    while(buffer[0] != 0x01 && i < 5)
+    {
+        sd_send_command(GO_IDLE_STATE, 0x00, GO_IDLE_STATE_CRC);
+        sd_get_response(buffer);
+        i++;
+    }
+    // If unsuccessful then quit
+    if(buffer[0] != 1)
+        return 0;
+
+    /*
+     *SEND CMD 8
+     */
+    Byte sent58 = 0; // for some process flow later
+    puts("Sending CMD8");
+    sd_send_command(SEND_IF_COND, SEND_IF_COND_ARG, SEND_IF_COND_CRC);
+    sd_get_response(buffer);
+    if(buffer[0] & _BV(2))
+    {
+        // older sd card, skip to cmd58
+        puts("Sending CMD58");
+        sd_send_command(READ_OCR, STUFF, READ_OCR_CRC);
+        sd_get_response(buffer);
+        sent58 = 1;
+        // TODO check voltage range
+    }
+    else if(buffer[3] == 0)
+    {
+        puts("Unusable SD Card");
+        return 0;
+    }
+
+    i = 0;
+    Byte j = 0;
+    while(i < 5)
+    {
+        while(1)
+        {
+            puts("Sending CMD55");
+            sd_send_command(APP_CMD, STUFF, DUMMY);
+            sd_get_response(buffer);
+            if(buffer[0] == 0x01)
+                break;
+            j++;
+            if(j > 5)
+            {
+                puts("SD Card stopped responding");
+                return 0;
+            }
+        }
+        // determine if the arg should have HCS or not
+        long arg = sent58 ? 0 : SD_SEND_OP_COND_ARG;
+        puts("Sending ACMD41");
+        sd_send_command(SD_SEND_OP_COND, arg, DUMMY);
+        sd_get_response(buffer);
+        if(buffer[0] == 0x01)
+            break;
+        i++;
+    }
+    if(i >= 5)
+    {
+        puts("SD Card timed out");
+        return 0;
+    }
+
+    if(!sent58)
+    {
+        puts("Sending CMD58");
+        sd_send_command(READ_OCR, STUFF, READ_OCR_CRC);
+        sd_get_response(buffer);
+        if(buffer[4] & _BV(1))
+            puts("High Capacity");
+        else
+            puts("Standard Capacity");
+    }
+
+    sd_send_command(SET_BLOCKLEN, BLOCKLEN, DUMMY); 
+    sd_get_response(buffer);
+    return 1;
 }
 
-void USARTWriteChar(char data) { // blocking
-	while(!(UCSR0A & (1<<UDRE0))) {}
-	UDR0=data;
-}
-void uwrite_hex(unsigned char n) {
-	if(((n>>4) & 15) < 10)
-	USARTWriteChar('0' + ((n>>4)&15));
-	else
-	USARTWriteChar('A' + ((n>>4)&15) - 10);
-	n <<= 4;
-	if(((n>>4) & 15) < 10)
-	USARTWriteChar('0' + ((n>>4)&15));
-	else
-	USARTWriteChar('A' + ((n>>4)&15) - 10);
-}
-char USARTReadChar() { // blocking
-	while(!(UCSR0A & (1<<RXC0))) {}
-	return UDR0;
-}
-// End of unmodifed code from
-//Taken from http://codeandlife.com/2012/04/25/simple-fat-and-sd-tutorial-part-3/
 
-//This is a modification of SD command code 
-//Taken from http://codeandlife.com/2012/04/25/simple-fat-and-sd-tutorial-part-3/
-//It incorporates above uart functions as well as the uart module
-// This function is used to send commands over spi to the sd card 
-void SD_command(unsigned char cmd, unsigned long arg, unsigned char crc) {
+void sd_send_command(Byte cmd, unsigned long arg, Byte crc)
+{
+    printf("Sending : %02X %02X %02X %02X %02X %02X\n", 
+            cmd, 
+            (Byte) (arg >> BYTE(3)), 
+            (Byte) (arg >> BYTE(2)), 
+            (Byte) (arg >> BYTE(1)), 
+            (Byte) arg, 
+            crc);
 
-	//Declare and set characters used in responses	
-	unsigned char read = RESPONSE; 
-	unsigned char i, buffer[RESPONSE];
-
-	//Infor for display of command and the writes the hex value	
-	printf("Sending Command: ");
-	uwrite_hex(cmd);
-	
-	//Set chip select for spi communication
-	CS_ENABLE();
-	
-	//Sends comman byte
-	spi_rxtx(cmd);
-	printf(" ");
-	
-	//Sends arguments/stuffing
-	uwrite_hex(arg>>24);
-	printf(" ");
-	spi_rxtx(arg>>24);
-	uwrite_hex(arg>>16);
-	printf(" ");
-	spi_rxtx(arg>>16);
-	uwrite_hex(arg>>8);
-	printf(" ");
-	spi_rxtx(arg>>8);
-	uwrite_hex(arg);
-	printf(" ");
-	spi_rxtx(arg);
-	
-	//Sends the CRC
-	uwrite_hex(crc);
-	printf("\r\n");
-	spi_rxtx(crc);
-
-	//Reads the response into a buffer
-	for(i=0; i<read; i++)
-		buffer[i] = spi_rxtx(FF);
-	//Disable chip select
-	CS_DISABLE();
-	
-	//Prints out the response received
-	printf("Response:");	
-	for(i=0; i<read; i++) {
-		printf(" ");
-		uwrite_hex(buffer[i]);
-	}	
-	printf("\r\n");
+    spi_send(cmd); // send the command byte
+    spi_send(arg >> BYTE(3)); // send the first byte of the arg
+    spi_send(arg >> BYTE(2)); // second byte
+    spi_send(arg >> BYTE(1)); // third byte
+    spi_send(arg);            // last byte
+    spi_send(crc);
 }
 
-//This is simply the above function implemented without printed out information
-// Used to reinitialize after a write 
-void sd_command(unsigned char cmd, unsigned long arg, unsigned char crc) {
-	
-	unsigned char read = RESPONSE;
-	unsigned char i, buffer[8];
-		
-	CS_ENABLE();
-	
-	spi_rxtx(cmd);
-	spi_rxtx(arg>>24);
-	spi_rxtx(arg>>16);	
-	spi_rxtx(arg>>8);	
-	spi_rxtx(arg);
-	spi_rxtx(crc);
-
-	for(i=0; i<read; i++)
-		buffer[i] = spi_rxtx(FF);
-	
-	CS_DISABLE();
+void sd_get_response(Byte *buffer)
+{
+    // skip the first byte
+    // it shouldn't have the response
+    sd_receive_byte(); 
+    buffer[0] = sd_receive_byte();
+    buffer[1] = sd_receive_byte();
+    buffer[2] = sd_receive_byte();
+    buffer[3] = sd_receive_byte();
+    buffer[4] = sd_receive_byte();
+    printf("Response: %02X %02X %02X %02X %02X\n", 
+            buffer[0],
+            buffer[1],
+            buffer[2],
+            buffer[3],
+            buffer[4]);
 }
 
-// Function that initalizes the sd card 
-void sd_init(){
-	// declaration of counter variable
-	char i;
-	//Initialize local spi function
-	SPI_init();
-	// Disable Chip select
-	CS_DISABLE();
-	//Wake up the SD card
-	for(i=0; i<10; i++) // idle for 1 bytes / 80 clocks
-		spi_rxtx(FF);
-
-	// Send command 0 to get SD talking with standard crc
-	SD_command(CMD0, 0x00000000, 0x95);
-
-	//Sends command 8 with standard crc
-	SD_command(CMD8, 0x000001AA, 0x87);
-	_delay_ms(100);
-
-	// Send command equivalent of ACMD41
-	// Delay added as SD card can take up to a second to respond				
-	for(i=0;i<3;i++){
-		SD_command(CMD55, 0x40000000, FF);
-		SD_command(CMD41, 0x40000000, FF);
-		_delay_ms(200);
-				}
-
-	//Send command 58 and the set block length
-	SD_command(CMD58, STUFFING, FF);
-	SD_command(CMD16, BLOCK, FF);
-
+Byte sd_read_block(unsigned long address, Byte *buffer)
+{
+    sd_send_command(READ_SINGLE_BLOCK, address, DUMMY);
+    int i;
+    for(i = 0; i < 20; i++)
+    {
+        buffer[0] = sd_receive_byte();
+        if(buffer[0] == 0xFE) // data start token received
+            break;
+    }
+    if(buffer[0] != 0xFE)
+    {
+        return 0;
+    }
+    // get the data from the block
+    for(i = 0; i < BLOCKLEN; i++) 
+        buffer[i] = sd_receive_byte();
+    // print block data
+    unsigned int max = BLOCKLEN/16;
+    for(i = 0; i < max; i++)
+    {
+        printf("%2d: ", i);
+        print_bytes(buffer, i*16, i*16+16);
+        puts("");
+    }
+    unsigned char k = spi_receive();
+    unsigned char j = spi_receive();
+    printf("CRC: %02X %02X\n", k, j);
+    return 1;
 }
 
-//Used to silently reinitialize the sd card after a write
-void sd_reinit(){
-	char i;
-	SPI_init();
-	CS_DISABLE();
-	for(i=0; i<10; i++) // idle for 1 bytes / 80 clocks
-	spi_rxtx(FF);
-
-	sd_command(CMD0, STUFFING, 0x95);
-	
-	sd_command(CMD8, 0x000001AA, 0x87);
-	_delay_ms(100);
-	
-	for(i=0;i<3;i++){
-		sd_command(CMD55, 0x40000000, FF);
-		sd_command(CMD41, 0x40000000, FF);
-		_delay_ms(200);
-	}
-
-	sd_command(CMD58, STUFFING, FF);
-
-	sd_command(CMD16, BLOCK, FF);
-
+Byte sd_write_block(unsigned long address, Byte *buffer)
+{
+    sd_send_command(WRITE_BLOCK, address, DUMMY);   
+    int i;
+    for(i = 0; i < 20; i++)
+    {
+        buffer[0] = sd_receive_byte();
+        printf("%02X ", buffer[0]);
+        if(buffer[0] == 0x01 || buffer[0] == 0x00)
+            break;
+    }
+    if(buffer[0] != 0x01 && buffer[0] != 0x00)
+    {
+        return 0;
+    }
+    int j;
+    puts("Sending data");
+    spi_send(START_TOKEN);
+    for(j = 0; j < BLOCKLEN+1; j++)
+    {
+        spi_send(buffer[j]);
+    }
+    Byte response_buffer[5];
+    sd_get_response(response_buffer);
+    sd_get_response(response_buffer);
+    return 1;
 }
 
-//Reads the bytes of the SD cards first sector
-void sd_read(){
-	
-	// creates variable declarations and counters
-	unsigned long address = 512;
-	unsigned short i;
-
-	// Sends the command for read then prints it out formatted as the 
-	// initialization function
-	printf("Sending Command: ");
-	uwrite_hex(CMD17);
-	CS_ENABLE();
-	
-	spi_rxtx(CMD17);
-	printf(" ");
-	
-	uwrite_hex(address>>24);
-	printf(" ");
-	spi_rxtx(address>>24);
-	uwrite_hex(address>>16);
-	printf(" ");
-	
-	spi_rxtx(address>>16);
-	
-	uwrite_hex(address>>8);
-	printf(" ");
-	spi_rxtx(address >> 8);
-	
-	uwrite_hex(address);
-	printf(" ");
-	spi_rxtx(address);
-	
-	uwrite_hex(FF);
-	printf("\r\n");
-	spi_rxtx(FF);
-	
-	//Prints out the response
-	printf("Response: ");
-	
-	unsigned char received = 0x00;
-	while(received!=0xFE){
-		received=spi_rxtx(FF);
-		uwrite_hex(received);
-		printf(" ");
-	}
-
-	//Prints out the bytes read from the sd card in hex	
-	printf("\r\nHere is the read block:\r\n");
-	
-	i=0;
-	while(i<BLOCK)
-	{
-		uwrite_hex(spi_rxtx(FF));
-		i++;
-		printf(" ");
-	}
-	CS_DISABLE();
-	printf("\r\n");
-}
-
-//Perform the write operation
-void sd_write(unsigned char value){
-	
-	unsigned char response;
-	CS_ENABLE();
-	//Sends command to start write
-	spi_rxtx(CMD24);
-	//dummy data
-	spi_rxtx(STUFFING);
-	spi_rxtx(STUFFING);
-	spi_rxtx(STUFFING);
-	spi_rxtx(STUFFING);
-	spi_rxtx(STUFFING);
-
-	spi_rxtx(FF);
-	
-	//response= spi_rxtx(FF);
-	
-	
-	// send the data to be written to sd 
-        int i;
-	for(i=0;i<BLOCK;i++){
-		response = spi_rxtx(value);
-	}
-	// Disable chip select	
-	CS_DISABLE();
-	
-	// re initialize sd		
-	sd_reinit();	
+void print_bytes(Byte *buffer, unsigned long start, unsigned long end)
+{
+    unsigned long tmp;
+    for(tmp = start; tmp < end; tmp++)
+    {
+        printf("%02X ", buffer[tmp]);
+    }
 }

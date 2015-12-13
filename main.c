@@ -1,72 +1,101 @@
 #include <avr/io.h>
-#include "../atmega644/Serial/uart.h"
-#include "sd.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include "uart.h"
+#include "spi.h"
+#include "sd.h"
 
-unsigned char started = 0;
 void start_program();
-void print_help();
-void invalid_command();
-void process_command(char);
-void read_block_helper();
-char input;
+void process_command(unsigned char in);
+void init_sd(); 
+void read_block();
+void write_block();
 
 int main()
 {
-    uart_init();
-    SPI_init();
-    DDRB = 0xFF;
-    PORTB = 0xFF;
-    while(1)
+    uart_init(); // initialize uart
+    spi_init(); // initialize spi
+    unsigned char in;
+    // wait for uart to receive something before beginning
+    start_program();
+    for(;;)
     {
-        start_program(); // loop until something is received from uart
-        print(">> ");
-        scanf("%c", &input);
-        uart_transmit('\n');
-        process_command(input);
+        printf(">> ");
+        scanf("%c", &in);
+        printf("\n");
+        process_command(in);
     }
 }
 
-void process_command(char in) {
-    int i = input - '0';
-    switch(i) {
-        case 0:
-            print_help();
-            break;
-        case 1:
-            sd_init();
-            break;
-        case 2:
-            read_block_helper();
-            break;
-        default:
-            invalid_command();
-    }
-}
-
-void print_help() {
-    puts("Command List:");
-    puts("0: Print this list");
-    puts("1: Initialize sd card");
-    puts("2: Read Block");
-}
-
-void invalid_command() {
-    puts("Invalid command");
-}
-
-
-// Wait for input and set started to true when something is received
 void start_program()
 {
-    if(!started) {
-        uart_receive(); // wait for input
-        started = 1; // set started to true when done
-        print_help();
+    char buf;
+    scanf("%c", &buf);
+    printf("\r");
+}
+
+void process_command(unsigned char in)
+{
+    switch(in)
+    {
+        case '1':
+            init_sd();
+            break;
+        case '2':
+            read_block();
+            break;
+        case '3':
+            write_block();
+            break;
+        default:
+            puts("Invalid Command");
     }
 }
 
-void read_block_helper()
+void init_sd()
 {
-    sd_read();
+    puts("Initializing SD Card");
+    Byte result = sd_init();
+    if(result)
+        puts("SD Card initialized");
+    else
+        puts("Failed to initialize sd card");
+
+}
+
+void read_block()
+{
+    unsigned char buffer[512];
+    printf("Address: ");
+    scanf("%s", buffer);
+    printf("\n");
+    unsigned long addr = atoi((char*)buffer);
+    Byte result = sd_read_block(addr, buffer);
+    if(!result)
+        result = sd_read_block(addr, buffer);
+    if(!result)
+        puts("failed to read block");
+    getchar();
+    fflush(stdin); // clean stdin
+}
+
+void write_block()
+{
+    unsigned char buffer[513];
+    printf("Address: ");
+    scanf("%s", buffer);
+    puts("");
+    unsigned long addr = atoi((char*)buffer);
+    printf("Value: ");
+    scanf("%s", buffer);
+    Byte i = atoi((char*)buffer);
+    int j;
+    for(j = 0; j < 513; j++)
+        buffer[j] = i;
+    Byte result = sd_write_block(addr, buffer);
+    if(!result)
+        result = sd_write_block(addr, buffer);
+    if(!result)
+        puts("failed to write block");
+    getchar();
 }
