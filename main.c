@@ -81,7 +81,7 @@ void read_block()
 
 void write_block()
 {
-    unsigned char buffer[513];
+    unsigned char buffer[BLOCKLEN];
     printf("Address: ");
     scanf("%s", buffer);
     puts("");
@@ -90,8 +90,10 @@ void write_block()
     scanf("%s", buffer);
     Byte i = atoi((char*)buffer);
     int j;
-    for(j = 0; j < 513; j++)
+    for(j = 0; j < BLOCKLEN; j++)
+    {
         buffer[j] = i;
+    }
     Byte result = sd_write_block(addr, buffer);
     if(!result)
         result = sd_write_block(addr, buffer);

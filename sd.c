@@ -146,6 +146,7 @@ Byte sd_read_block(unsigned long address, Byte *buffer)
     for(i = 0; i < 20; i++)
     {
         buffer[0] = sd_receive_byte();
+        printf("Receiving %02X\n", buffer[0]);
         if(buffer[0] == 0xFE) // data start token received
             break;
     }
@@ -177,21 +178,22 @@ Byte sd_write_block(unsigned long address, Byte *buffer)
     for(i = 0; i < 20; i++)
     {
         buffer[0] = sd_receive_byte();
-        printf("%02X ", buffer[0]);
-        if(buffer[0] == 0x01 || buffer[0] == 0x00)
+        printf("%02X \n", buffer[0]);
+        if(buffer[0] == 0x01 || buffer[0] == 0x00 || buffer[0] == 0x02)
             break;
     }
-    if(buffer[0] != 0x01 && buffer[0] != 0x00)
+    if(buffer[0] != 0x01 && buffer[0] != 0x00 && buffer[0] !=  0x02)
     {
         return 0;
     }
     int j;
     puts("Sending data");
     spi_send(START_TOKEN);
-    for(j = 0; j < BLOCKLEN+1; j++)
+    for(j = 0; j < BLOCKLEN; j++)
     {
         spi_send(buffer[j]);
     }
+    spi_send(DUMMY);
     Byte response_buffer[5];
     sd_get_response(response_buffer);
     sd_get_response(response_buffer);
